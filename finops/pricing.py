@@ -102,3 +102,43 @@ def spot_checkpoint_cost(
         "on_demand_cost": round(on_demand_cost, 2),
         "savings_pct": round(savings_pct, 1),
     }
+
+
+def cache_break_even_reads(
+    write_cost_per_m: float,
+    read_discount: float = 0.10,
+    base_read_cost_per_m: float | None = None,
+) -> float:
+    """Minimum number of reads of a cached prefix required to amortize write cost.
+
+    Formula (Extension 3):
+      reads * savings_per_read >= write_cost
+      reads * (base_read_cost * (1 - read_discount)) >= write_cost
+      break_even = write_cost / (base_read_cost * (1 - read_discount))
+    """
+    base = base_read_cost_per_m if base_read_cost_per_m is not None else write_cost_per_m
+    savings_per_read = base * (1.0 - read_discount)
+    if savings_per_read <= 0:
+        return float("inf")
+    return write_cost_per_m / savings_per_read
+
+
+def cache_is_worth_it(
+    avg_cache_reads: float | None = None,
+    write_cost_per_m: float | None = None,
+    read_discount: float = 0.10,
+    base_read_cost_per_m: float | None = None,
+    avg_reads: float | None = None,
+    write_cost: float | None = None,
+) -> bool:
+    """Return True if average read frequency justifies cache write overhead (Extension 3).
+
+    Supports both (avg_cache_reads, write_cost_per_m) and (avg_reads, write_cost) conventions.
+    Prompt caching saves money only when the prefix is read enough times that
+    accumulated read discounts exceed the write / storage cost.
+    """
+    actual_reads = avg_reads if avg_reads is not None else (avg_cache_reads if avg_cache_reads is not None else 0.0)
+    actual_write = write_cost if write_cost is not None else (write_cost_per_m if write_cost_per_m is not None else 0.0)
+    be = cache_break_even_reads(actual_write, read_discount, base_read_cost_per_m)
+    return actual_reads >= be
+

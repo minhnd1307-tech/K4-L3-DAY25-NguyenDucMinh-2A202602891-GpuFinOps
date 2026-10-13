@@ -11,8 +11,6 @@ from finops import report, sustainability
 from missions import m1_efficiency_audit, m2_inference_levers, m3_purchasing
 
 DAYS = 30
-# one tier down for over-provisioned ("util-lie") GPUs
-RIGHTSIZE_MAP = {"H100": "A100", "H200": "H100", "A100": "A10G", "A10G": "L4", "L4": "L4"}
 
 
 def run(verbose: bool = True) -> dict:
@@ -26,12 +24,8 @@ def run(verbose: bool = True) -> dict:
     purchasing_savings = r3["on_demand_monthly"] - r3["optimized_monthly"]
 
     idle_savings = r1["idle_waste_daily"] * DAYS
-    rightsize_savings = 0.0
-    for lie in r1["lies"]:
-        cur = lie["gpu_type"]
-        tgt = RIGHTSIZE_MAP.get(cur, cur)
-        delta = num(cat[cur]["on_demand_hr"]) - num(cat[tgt]["on_demand_hr"])
-        rightsize_savings += max(0.0, delta) * 24 * DAYS
+    # Dynamic data-driven right-sizing savings from M1 (strictly enforces VRAM and BW constraints)
+    rightsize_savings = r1.get("rightsize_monthly_lies_only", 0.0)
 
     levers = {
         "Inference (cascade/cache/batch)": round(infer_savings),
@@ -46,16 +40,31 @@ def run(verbose: bool = True) -> dict:
     # --- sustainability snapshot ---
     median_tokens = 800
     wh = sustainability.wh_per_query(median_tokens)
+    cleanest = min(sustainability.REGION_CARBON, key=sustainability.REGION_CARBON.get)
+    cheapest = min(sustainability.REGION_PRICE_KWH, key=sustainability.REGION_PRICE_KWH.get)
+    carbon_us1 = sustainability.REGION_CARBON["us-east-1"]
+    carbon_clean = sustainability.REGION_CARBON[cleanest]
     sust = {
         "wh_per_query": wh,
         "carbon_g": sustainability.carbon_g(wh, "us-east-1"),
-        "best_region": min(sustainability.REGION_CARBON, key=sustainability.REGION_CARBON.get),
+        "best_region": cleanest,
+        "cleanest_region": cleanest,
+        "cheapest_region": cheapest,
+        "cleanest_carbon": carbon_clean,
+        "cheapest_kwh": sustainability.REGION_PRICE_KWH[cheapest],
+        "carbon_reduction_pct": (1.0 - carbon_clean / carbon_us1) * 100.0,
     }
 
-    md = report.build_report(baseline, optimized, levers, sustainability=sust)
+    unit_econ = {
+        "baseline_per_m": r2["baseline_per_m"],
+        "optimized_per_m": r2["optimized_per_m"],
+        "savings_pct": r2["savings_pct"],
+    }
+
+    md = report.build_report(baseline, optimized, levers, sustainability=sust, unit_economics=unit_econ)
     out_md = os.path.join(ROOT, "outputs", "report.md")
     os.makedirs(os.path.dirname(out_md), exist_ok=True)
-    with open(out_md, "w") as f:
+    with open(out_md, "w", encoding="utf-8") as f:
         f.write(md)
     png = report.savings_waterfall(levers, os.path.join(ROOT, "outputs", "savings.png"))
 
